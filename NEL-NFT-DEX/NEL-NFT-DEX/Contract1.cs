@@ -67,9 +67,11 @@ namespace NEL_NFT_DEX
             public byte[] orderID; //=TXID
             public byte[] seller;
             public NFT[] nFTs;
+            public byte[] nFTsHash;
             public byte[] assetID;
             public BigInteger price;
             public byte[] buyer;
+            public bool isSold;
         }
 
         //动态合约调用委托
@@ -83,6 +85,18 @@ namespace NEL_NFT_DEX
         public delegate void deleSellOrderSold(byte[] orderID, Order order);
         [DisplayName("sellOrderSold")]
         public static event deleSellOrderSold onSellOrderSold;
+
+        public delegate void deleAskOrderCreated(byte[] orderID, Order order);
+        [DisplayName("askOrderCreated")]
+        public static event deleAskOrderCreated onAskOrderCreated;
+
+        public delegate void deleAskOrderCanceld(byte[] orderID);
+        [DisplayName("askOrderCanceld")]
+        public static event deleAskOrderCanceld onAskOrderCanceld;
+
+        public delegate void deleAskOrderSold(byte[] orderID, Order order);
+        [DisplayName("askOrderSold")]
+        public static event deleAskOrderSold onAskOrderSold;
 
         public static bool checkNFTs(NFT[] nFTs)
         {
@@ -161,9 +175,11 @@ namespace NEL_NFT_DEX
             order.orderID = TXID;
             order.seller = seller;
             order.nFTs = nFTs;
+            order.nFTsHash = SmartContract.Sha256(Helper.Serialize(nFTs));
             order.assetID = assetID;
             order.price = price;
             order.buyer = new byte[0];
+            order.isSold = false;
 
             StorageMap sellOrderMap = Storage.CurrentContext.CreateMap("sellOrder");
             sellOrderMap.Put(order.orderID, Helper.Serialize(order));
@@ -197,6 +213,7 @@ namespace NEL_NFT_DEX
                 } 
 
                 order.buyer = buyer;
+                order.isSold = true;
                 sellOrderMap.Put(orderID, Helper.Serialize(order));
                 onSellOrderSold(orderID, order);
             }
@@ -206,10 +223,104 @@ namespace NEL_NFT_DEX
         }
 
         //NFT（组）求购
-        public static bool buyNFT(byte[] buyer,NFT[] nFTs, byte[] assetID, BigInteger price)
+        public static bool askNFT(byte[] buyer,byte[] nFTsB, byte[] assetID, BigInteger price)
         {
+            NFT[] nFTs = Helper.Deserialize(nFTsB) as NFT[];
 
-            return false;
+            if (!Runtime.CheckWitness(buyer)) return false;
+            if (assetID.Length != 20) return false;
+            if (price < 0) return false;
+
+            ////检查NFT组是否为调用者所有，是否所有NFT都已授权合约
+            //if (!checkNFTs(nFTs)) return false;
+
+            //执行转账到合约暂存
+            if (!transferNEP5(buyer, ExecutionEngine.ExecutingScriptHash, assetID, price))
+            {
+                //此处需要强制抛出异常触发回滚
+                throw new Exception("transferNEP5 Fail！");
+                //return false;
+            }
+
+            byte[] TXID = (ExecutionEngine.ScriptContainer as Transaction).Hash;
+
+            Order order = new Order();
+            order.orderID = TXID;
+            order.seller = new byte[0];
+            order.nFTs = nFTs;
+            order.nFTsHash = SmartContract.Sha256(Helper.Serialize(nFTs));
+            order.assetID = assetID;
+            order.price = price;
+            order.buyer = buyer;
+            order.isSold = false;
+
+            StorageMap askOrderMap = Storage.CurrentContext.CreateMap("askOrder");
+            askOrderMap.Put(order.orderID, Helper.Serialize(order));
+            onAskOrderCreated(order.orderID, order);
+
+            return true;
+        }
+
+        public static bool cancelAskOrder(byte[] orderID)
+        {
+            StorageMap askOrderMap = Storage.CurrentContext.CreateMap("askOrder");
+            var data = askOrderMap.Get(orderID);
+            if (data.Length > 0)
+            {
+                Order order = Helper.Deserialize(data) as Order;
+
+                if(!Runtime.CheckWitness(order.buyer)) return false;
+
+                if (order.isSold) return false;
+
+                //执行转账退回合约暂存
+                if (!transferNEP5(ExecutionEngine.ExecutingScriptHash, order.buyer, order.assetID, order.price))
+                {
+                    //此处需要强制抛出异常触发回滚
+                    throw new Exception("transferNEP5 Fail！");
+                    //return false;
+                }
+
+                askOrderMap.Delete(orderID);
+                onAskOrderCanceld(orderID);
+            }
+            else return false;
+
+            return true;
+        }
+
+        public static bool sellAskOrder(byte[] orderID, byte[] seller) {
+            StorageMap askOrderMap = Storage.CurrentContext.CreateMap("askOrder");
+            var data = askOrderMap.Get(orderID);
+            if (data.Length > 0)
+            {
+                Order order = Helper.Deserialize(data) as Order;
+
+
+                //执行NFT所有权转移
+                if (!NFTtransferOwnership(order.nFTs, order.buyer))
+                {
+                    //此处需要强制抛出异常触发回滚
+                    throw new Exception("NFTtransferOwnership Fail！");
+                    //return false;
+                }
+
+                //执行转账取出合约暂存
+                if (!transferNEP5(ExecutionEngine.ExecutingScriptHash, seller , order.assetID, order.price))
+                {
+                    //此处需要强制抛出异常触发回滚
+                    throw new Exception("transferNEP5 Fail！");
+                    //return false;
+                }
+
+                order.seller = seller;
+                order.isSold = true;
+                askOrderMap.Put(orderID, Helper.Serialize(order));
+                onAskOrderSold(orderID, order);
+            }
+            else return false;
+
+            return true;
         }
 
         //NFT以物易物
