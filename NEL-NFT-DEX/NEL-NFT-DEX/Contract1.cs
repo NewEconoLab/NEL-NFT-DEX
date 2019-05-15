@@ -347,6 +347,18 @@ namespace NEL_NFT_DEX
                 {
                     return buySellOrder((byte[])args[0], (byte[])args[1]);
                 }
+                if (operation == "askNFT")
+                {
+                    return askNFT((byte[])args[0], (byte[])args[1], (byte[])args[2], (BigInteger)args[3]);
+                }
+                if (operation == "cancelAskOrder")
+                {
+                    return cancelAskOrder((byte[])args[0]);
+                }
+                if (operation == "sellAskOrder")
+                {
+                    return sellAskOrder((byte[])args[0], (byte[])args[1]);
+                }
             }
 
             return false;
